@@ -1,5 +1,6 @@
 import os
 from typing import AsyncIterator
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -7,20 +8,23 @@ from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 
 from graph import build_graph
+from models import PromptRequest
 
-load_dotenv()
+# Global variable to store the graph
+graph = None
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    load_dotenv()
+    
+    if not os.getenv("OPENAI_API_KEY"):
+        raise EnvironmentError("OPENAI_API_KEY is not set in the environment variables.")
+    
+    global graph
+    graph = build_graph()
+    yield
 
-if not os.getenv("OPENAI_API_KEY"):
-    raise EnvironmentError("OPENAI_API_KEY is not set in the environment variables.")
-
-class PromptRequest(BaseModel):
-    prompt: str
-
-
-# Build the graph
-graph = build_graph()
+app = FastAPI(lifespan=lifespan)
 
 async def llm_chat_generator(prompt: str) -> AsyncIterator[str]:
     """Streams LLM response using LangGraph."""
@@ -35,9 +39,11 @@ async def llm_chat_generator(prompt: str) -> AsyncIterator[str]:
             if content:
                 yield content
 
+
 @app.post("/stream")
 async def stream_chat(request: PromptRequest):
     return StreamingResponse(llm_chat_generator(request.prompt), media_type="text/plain")
+
 
 if __name__ == "__main__":
     import uvicorn
