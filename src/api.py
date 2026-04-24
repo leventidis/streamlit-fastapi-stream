@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 
 from graph import build_graph
@@ -27,12 +26,10 @@ app = FastAPI(lifespan=lifespan)
 
 async def llm_chat_generator(prompt: str) -> AsyncIterator[str]:
     """Streams LLM response using LangGraph."""
-    # Stream the response
     async for event in graph.astream_events(
-        {"messages": [HumanMessage(content=prompt)]},
+        {"question": prompt},
         version="v2"
     ):
-        # Filter for streaming events from the LLM
         if event["event"] == "on_chat_model_stream":
             content = event["data"]["chunk"].content
             if content:
