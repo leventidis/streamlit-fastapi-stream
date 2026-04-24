@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from graph import build_graph
 from models import PromptRequest
 
-# Global variable to store the graph
 graph = None
 
 @asynccontextmanager
