@@ -15,10 +15,17 @@ class ChatMessage:
     node_outputs: dict[str, str] = field(default_factory=dict)
     stats: dict = field(default_factory=dict)
     planning_required: bool | None = None
+    trace_steps: list[dict] = field(default_factory=list)
 
     def render(self):
         """Renders the chat message in Streamlit, including any node outputs in expanders."""
         with st.chat_message(self.role):
+            if self.trace_steps:
+                with st.expander(f"Agent trace ({len(self.trace_steps)} steps)", expanded=False):
+                    for step in self.trace_steps:
+                        duration = f"  `{step['duration_ms']} ms`" if "duration_ms" in step else ""
+                        st.markdown(f"✅ {step['label']}{duration}")
+
             st.markdown(self.content)
 
             if self.planning_required is not None:
