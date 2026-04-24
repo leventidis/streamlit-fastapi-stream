@@ -37,7 +37,7 @@ def answer_question(state: GraphState):
     """Generates the final answer to the question using the plan."""
     llm = ChatOpenAI(model="gpt-4o-mini", streaming=True, temperature=0.0)
     messages = [
-        SystemMessage(content=f"You are a helpful assistant. Use the following plan to answer the question.\n\nPlan:\n{state['plan']}"),
+        SystemMessage(content=f"You are a helpful assistant. Use the following plan to answer the question.\n\nPlan:\n{state['plan']}. Include the following joke in your answer to make it more engaging:\n\nJoke:\n{state['joke']}"),
         HumanMessage(content=state["question"]),
     ]
     response = llm.invoke(messages)
