@@ -17,11 +17,19 @@ def orchestrate(state: GraphState):
     llm = ChatOpenAI(model="gpt-4o-mini", streaming=True, temperature=0.0)
     messages = [
         SystemMessage(
-            content="""
-            You are a helpful assistant. Given a question, determine if it is complex enough to require a plan.
-            If yes, reply with 'planning' to trigger the planning node. If not, reply with 'answer_question' to skip directly to the answer.
-            Do not reply with anything other than 'planning' or 'answer_question' and do not include any additional text.
-            """
+            content=(
+                "You are a routing assistant. Your job is to decide whether a question requires structured planning before answering.\n\n"
+                "Reply with 'planning' if the question:\n"
+                "- Requires multiple steps or a sequence of actions to answer well\n"
+                "- Is a how-to, tutorial, or process-oriented question\n"
+                "- Involves research, comparison, or analysis across multiple areas\n"
+                "- Would benefit from a structured, organized response\n\n"
+                "Reply with 'answer_question' if the question:\n"
+                "- Is a simple factual lookup (e.g. 'What is the capital of France?')\n"
+                "- Is a greeting or small talk (e.g. 'hi', 'how are you')\n"
+                "- Can be fully answered in one or two sentences\n\n"
+                "Reply with only 'planning' or 'answer_question'. Do not include any other text."
+            )
         ),
         HumanMessage(content=state["question"]),
     ]
@@ -41,7 +49,7 @@ def planning(state: GraphState):
     """Given a question, come up with a plan to answer it."""
     llm = ChatOpenAI(model="gpt-4o-mini", streaming=True, temperature=0.0)
     messages = [
-        SystemMessage(content="You are a helpful assistant. Given a question, create a concise step-by-step plan to answer it."),
+        SystemMessage(content="You are a helpful assistant. Given a question, create a concise step-by-step plan to answer it. Use at most 5 steps."),
         HumanMessage(content=state["question"]),
     ]
     response = llm.invoke(messages)
