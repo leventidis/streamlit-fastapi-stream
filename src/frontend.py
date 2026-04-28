@@ -6,6 +6,14 @@ from components.sidebar import sidebar
 
 API_URL = "http://localhost:8000/stream"
 
+# Icon per graph node — extend this as the graph grows
+NODE_ICONS: dict[str, str] = {
+    "orchestrate": "🔀",
+    "planning": "📋",
+    "generate_joke": "😄",
+    "answer_question": "💬",
+}
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -23,7 +31,46 @@ def parse_sse_line(line: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-# ── Chat history ─────────────────────────────────────────────────────────────
+def render_trace_markdown(trace_state: dict[str, dict]) -> str:
+    """Render the live trace state as structured markdown.
+
+    Each node gets a section that looks like:
+
+        ⏳ 📋 **Creating a plan...**          ← while running
+        > Step 1: Understand the question...  ← streaming tokens
+        > Step 2: ...
+
+        ✅ 📋 **Plan created** `1843 ms`      ← after completion
+        > Step 1: ...
+        > Step 2: ...
+
+    Sections are separated by horizontal rules so each node is visually distinct.
+    """
+    if not trace_state:
+        return "*Starting...*"
+
+    sections: list[str] = []
+    for node_name, data in trace_state.items():
+        is_done = data["status"] == "done"
+        status_icon = "✅" if is_done else "⏳"
+        node_icon = NODE_ICONS.get(node_name, "🔹")
+        duration = f" `{data['duration_ms']} ms`" if is_done and data.get("duration_ms") else ""
+        header = f"{status_icon} {node_icon} **{data['label']}**{duration}"
+
+        content = data.get("content", "").strip()
+        if content:
+            quoted = "\n".join(
+                f"> {line}" if line.strip() else ">"
+                for line in content.split("\n")
+            )
+            sections.append(f"{header}\n{quoted}")
+        else:
+            sections.append(header)
+
+    return "\n\n---\n\n".join(sections)
+
+
+# ── Chat history ──────────────────────────────────────────────────────────────
 for message in st.session_state.messages:
     message.render()
 
@@ -37,16 +84,30 @@ if prompt := st.chat_input("Ask me something..."):
     user_message.render()
 
     with st.chat_message("assistant"):
-        # st.status acts as a live collapsible trace panel — stays visible after completion
-        trace_status = st.status("Agent is working...", expanded=True)
+        # st.status is the collapsible trace container.
+        # It stays expanded and shows a spinner while the agent works,
+        # then collapses with a checkmark once the answer is rendered —
+        # mimicking the Copilot / Claude Code "reasoning steps" panel.
+        trace_status = st.status("🤖 Agent is reasoning...", expanded=True)
+        with trace_status:
+            # Single st.empty() that we replace on every event — gives full
+            # control over the trace layout without Streamlit ordering issues.
+            trace_placeholder = st.empty()
+
+        # The final streamed answer appears below the trace panel
         answer_placeholder = st.empty()
 
-        current_event = None
-        node_outputs: dict[str, str] = {}
+        current_event: str | None = None
+        # trace_state is an ordered dict: node_name → {label, content, status, duration_ms}
+        trace_state: dict[str, dict] = {}
+        node_outputs: dict[str, str] = {}   # accumulated content per node (for history)
         stats: dict = {}
         routing: dict = {}
-        trace_steps: list[dict] = []
+        trace_steps: list[dict] = []        # compact step list (for history)
         response_text = ""
+
+        def update_trace() -> None:
+            trace_placeholder.markdown(render_trace_markdown(trace_state))
 
         with requests.post(API_URL, json={"prompt": prompt}, stream=True) as response:
             for raw_line in response.iter_lines(decode_unicode=True):
@@ -56,24 +117,58 @@ if prompt := st.chat_input("Ask me something..."):
                     current_event = value
 
                 elif kind == "data":
+
                     if current_event == "status":
-                        trace_status.update(label=value, state="running")
+                        # value: {"node": "planning", "label": "Creating a plan..."}
+                        node = value["node"]
+                        if node not in trace_state:
+                            trace_state[node] = {
+                                "label": value["label"],
+                                "content": "",
+                                "status": "running",
+                                "duration_ms": None,
+                            }
+                            update_trace()
 
                     elif current_event == "routing":
+                        # value: {"planning_required": bool}
                         routing.update(value)
+                        route_text = "📋 Planning required" if value.get("planning_required") else "⚡ Direct answer"
+                        if "orchestrate" in trace_state:
+                            trace_state["orchestrate"]["content"] = route_text
+                            update_trace()
 
                     elif current_event == "trace":
-                        # A node finished — append a checkmark with timing inside the trace panel
+                        # value: {"node": "planning", "label": "Plan created", "duration_ms": 843}
+                        node = value["node"]
                         trace_steps.append(value)
-                        duration = f"  `{value['duration_ms']} ms`" if "duration_ms" in value else ""
-                        trace_status.write(f"✅ {value['label']}{duration}")
+                        if node in trace_state:
+                            trace_state[node].update({
+                                "label": value["label"],
+                                "status": "done",
+                                "duration_ms": value.get("duration_ms"),
+                            })
+                        else:
+                            # Node had no prior status event (e.g. direct answer_question)
+                            trace_state[node] = {
+                                "label": value["label"],
+                                "content": "",
+                                "status": "done",
+                                "duration_ms": value.get("duration_ms"),
+                            }
+                        update_trace()
 
                     elif current_event == "node_output":
-                        # value is formatted as "node_name:token"
-                        node, _, token = value.partition(":")
+                        # value: {"node": "planning", "token": "some text"}
+                        node = value["node"]
+                        token = value["token"]
                         node_outputs[node] = node_outputs.get(node, "") + token
+                        if node in trace_state:
+                            trace_state[node]["content"] = node_outputs[node]
+                            update_trace()
 
                     elif current_event == "answer":
+                        # value: plain token string
                         response_text += value
                         answer_placeholder.markdown(response_text + "▌")
 
@@ -81,16 +176,13 @@ if prompt := st.chat_input("Ask me something..."):
                         stats.update(value)
 
         answer_placeholder.markdown(response_text)
-        trace_status.update(label="Done", state="complete", expanded=True)
+
+        # Collapse trace once the answer is fully shown — user can still click to re-expand
+        trace_status.update(label="✅ Agent trace", state="complete", expanded=False)
 
         if routing.get("planning_required") is not None:
             label, color = ("🗺 Planned", "green") if routing["planning_required"] else ("⚡ Direct", "orange")
             st.badge(label, color=color)
-
-        for node, content in node_outputs.items():
-            label = NODE_OUTPUT_LABELS.get(node, node)
-            with st.expander(label):
-                st.markdown(content)
 
         if stats:
             st.caption(

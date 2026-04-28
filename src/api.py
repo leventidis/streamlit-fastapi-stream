@@ -36,8 +36,10 @@ app = FastAPI(lifespan=lifespan)
 
 # Status messages shown while a node is running (on_chat_model_start)
 NODE_STATUS_MESSAGES = {
+    "orchestrate": "Routing question...",
     "planning": "Creating a plan...",
     "generate_joke": "Generating a joke...",
+    "answer_question": "Formulating answer...",
 }
 
 NODE_OUTPUT_LABELS = {
@@ -47,6 +49,7 @@ NODE_OUTPUT_LABELS = {
 
 # Trace labels emitted when a node completes (on_chain_end)
 NODE_TRACE_LABELS = {
+    "orchestrate": "Route decided",
     "planning": "Plan created",
     "generate_joke": "Joke generated",
     "answer_question": "Answer generated",
@@ -90,34 +93,34 @@ async def llm_chat_generator(prompt: str) -> AsyncIterator[str]:
             node_start_times[run_id] = time.monotonic()
 
         # Yield status updates when a new node starts
+        # Payload is a dict so the frontend can identify the node and label
         elif event_name == GraphEvent.ON_CHAT_MODEL_START and node in NODE_STATUS_MESSAGES:
             if node not in announced_nodes:
                 announced_nodes.add(node)
-                yield sse_event("status", NODE_STATUS_MESSAGES[node])
+                yield sse_event("status", {"node": node, "label": NODE_STATUS_MESSAGES[node]})
 
-        elif event_name == GraphEvent.ON_CHAIN_END:
-            # Routing decision from the orchestrate node
-            if event.get("name") == "orchestrate" and node == "orchestrate":
+        elif event_name == GraphEvent.ON_CHAIN_END and event.get("name") in NODE_TRACE_LABELS:
+            node_name = event["name"]
+            duration_ms = round((time.monotonic() - node_start_times.pop(run_id, time.monotonic())) * 1000)
+            yield sse_event("trace", {
+                "node": node_name,
+                "label": NODE_TRACE_LABELS[node_name],
+                "duration_ms": duration_ms,
+            })
+            # Routing decision is also emitted alongside the trace for the orchestrate node
+            if node_name == "orchestrate":
                 output = event["data"].get("output", {})
                 planning_required = output.get("planning_required", False)
                 yield sse_event("routing", {"planning_required": planning_required})
-            # Trace completion record with timing for all other tracked nodes
-            elif event.get("name") in NODE_TRACE_LABELS:
-                duration_ms = round((time.monotonic() - node_start_times.pop(run_id, time.monotonic())) * 1000)
-                yield sse_event("trace", {
-                    "node": event["name"],
-                    "label": NODE_TRACE_LABELS[event["name"]],
-                    "duration_ms": duration_ms,
-                })
 
         elif event_name == GraphEvent.ON_CHAT_MODEL_STREAM:
             content = event["data"]["chunk"].content
             if not content:
                 continue
 
-            # Stream intermediate node tokens so the frontend can show them in dropdowns
+            # Stream intermediate node tokens — payload is a dict for clean frontend parsing
             if node in NODE_OUTPUT_LABELS:
-                yield sse_event("node_output", f"{node}:{content}")
+                yield sse_event("node_output", {"node": node, "token": content})
 
             # Stream the final answer token by token
             elif node == "answer_question":
